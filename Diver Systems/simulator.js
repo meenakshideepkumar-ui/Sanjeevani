@@ -1,22 +1,3 @@
-/**
- * simulator.js
- * Day 3 — Diver Systems
- * Build dive-profile simulator: depth, ascent rate, dive time for 1 diver.
- *
- * Models a single diver moving through a realistic dive profile:
- *   descend -> bottom time -> ascend -> surfaced
- *
- * Emits packets shaped exactly per shared/protocol.md (common fields +
- * diver-only block), one per `step()` call, via EventEmitter('packet').
- *
- * Fields intentionally stubbed for later days (left as clearly-marked
- * placeholders so the packet shape is correct from Day 3 onward):
- *   - pos_x / pos_y      -> Day 10 (acoustic beacon positioning sim)
- *   - triage_tier        -> Day 8-9 (triage engine)
- *   - n2_saturation_est  -> Day 5 (N2 saturation build-up model)
- *   - air_supply_pct     -> simple linear drain for now, refine Day 11
- */
-
 const EventEmitter = require('events');
 
 const PHASES = {
@@ -27,14 +8,6 @@ const PHASES = {
 };
 
 class DiveProfileSimulator extends EventEmitter {
-  /**
-   * @param {object} opts
-   * @param {string} opts.workerId      e.g. "D01"
-   * @param {number} opts.targetDepth   meters, positive (e.g. 18)
-   * @param {number} opts.descentRate   m/s during descent (e.g. 0.5)
-   * @param {number} opts.bottomTimeSec seconds spent at target depth
-   * @param {number} opts.ascentRate    m/s during ascent (e.g. 0.3 — safe guideline ~10m/min)
-   */
   constructor({
     workerId = 'D01',
     targetDepth = 18,
@@ -56,17 +29,9 @@ class DiveProfileSimulator extends EventEmitter {
     this.elapsed = 0;
     this.bottomElapsed = 0;
     this.lastAscentRate = 0;
-
-    // Simple placeholder drains — not the focus of Day 3, kept so the
-    // packet has plausible values. Revisit when their dedicated days land.
     this.airSupplyPct = 100;
     this.batteryPct = 100;
   }
-
-  /**
-   * Advance the simulation by dt seconds and emit + return the next packet.
-   * @param {number} dt seconds of simulated dive time to advance
-   */
   step(dt) {
     this.elapsed += dt;
     let depthDelta = 0;
@@ -109,25 +74,20 @@ class DiveProfileSimulator extends EventEmitter {
     this.emit('packet', packet);
     return packet;
   }
-
-  /** Build the current packet, matching shared/protocol.md exactly. */
   getPacket() {
     return {
-      // --- common fields ---
       worker_id: this.workerId,
       domain: this.domain,
       ts: Math.floor(Date.now() / 1000),
       hr: this._simHr(),
       spo2: this._simSpo2(),
       motion_g: this._simMotion(),
-      pos_x: 0, // placeholder — Day 10 positioning sim
-      pos_y: 0, // placeholder — Day 10 positioning sim
-      pos_z: -Number(this.depth.toFixed(2)), // negative = below surface
-      triage_tier: 'green', // placeholder — Day 8-9 triage engine
+      pos_x: 0, 
+      pos_y: 0, 
+      pos_z: -Number(this.depth.toFixed(2)),
+      triage_tier: 'green', 
       battery_pct: Math.round(this.batteryPct),
       comms_status: 'ok',
-
-      // --- diver-only block ---
       depth_m: Number(this.depth.toFixed(2)),
       ascent_rate: Number(this.lastAscentRate.toFixed(3)),
       dive_time_elapsed: Math.floor(this.elapsed),
