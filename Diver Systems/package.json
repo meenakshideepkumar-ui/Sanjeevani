@@ -1,0 +1,10 @@
+{
+  "name": "diver-simulator",
+  "version": "0.1.0",
+  "description": "Sanjeevani - Diver Systems dive-profile simulator (Day 3)",
+  "main": "simulator.js",
+  "scripts": {
+    "start": "node run.js"
+  },
+  "license": "UNLICENSED"
+}
