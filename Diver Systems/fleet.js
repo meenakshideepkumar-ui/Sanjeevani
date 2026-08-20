@@ -1,16 +1,3 @@
-/**
- * fleet.js
- * Day 4 — Diver Systems
- * Add multi-diver support; simulate normal dive cycle (descend/bottom/ascend)
- * across a whole team of divers at once.
- *
- * Each diver in the fleet is an independent DiveProfileSimulator with its
- * own (optionally randomized) profile — different target depth, descent
- * rate, bottom time — so a fleet doesn't look like N clones of one diver.
- * Every diver still carries the Day 5 N2 model and Day 6 rapid-ascent
- * capability, since those live on DiveProfileSimulator itself.
- */
-
 const EventEmitter = require('events');
 const { DiveProfileSimulator } = require('./simulator');
 
@@ -50,16 +37,12 @@ class DiverFleet extends EventEmitter {
       });
 
       sim.on('packet', (packet) => {
-        // Re-emit individually so downstream code can subscribe once to
-        // the fleet instead of wiring each diver.
         this.emit('packet', packet);
       });
 
       this.divers.set(workerId, sim);
     }
   }
-
-  /** Advance every diver by dt seconds. Returns the array of packets produced this tick. */
   step(dt) {
     const packets = [];
     for (const sim of this.divers.values()) {
@@ -68,21 +51,15 @@ class DiverFleet extends EventEmitter {
     this.emit('tick', packets);
     return packets;
   }
-
-  /** True once every diver in the fleet has surfaced. */
   isFinished() {
     for (const sim of this.divers.values()) {
       if (!sim.isFinished()) return false;
     }
     return true;
   }
-
-  /** Look up one diver's simulator by worker_id, e.g. for manually triggering events on it. */
   get(workerId) {
     return this.divers.get(workerId);
   }
-
-  /** Snapshot packets for every diver without advancing time. */
   getPackets() {
     return Array.from(this.divers.values()).map((sim) => sim.getPacket());
   }

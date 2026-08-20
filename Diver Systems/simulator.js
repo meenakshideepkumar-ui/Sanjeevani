@@ -1,23 +1,6 @@
-/**
- * simulator.js
- * Day 3 — Diver Systems
- * Build dive-profile simulator: depth, ascent rate, dive time for 1 diver.
- *
- * Models a single diver moving through a realistic dive profile:
- *   descend -> bottom time -> ascend -> surfaced
- *
- * Emits packets shaped exactly per shared/protocol.md (common fields +
- * diver-only block), one per `step()` call, via EventEmitter('packet').
- *
- * Fields intentionally stubbed for later days (left as clearly-marked
- * placeholders so the packet shape is correct from Day 3 onward):
- *   - pos_x / pos_y      -> Day 10 (acoustic beacon positioning sim)
- *   - triage_tier        -> Day 8-9 (triage engine)
- *   - n2_saturation_est  -> Day 5 (N2 saturation build-up model)
- *   - air_supply_pct     -> simple linear drain for now, refine Day 11
- */
-
 const EventEmitter = require('events');
+const { SAFE_ASCENT_RATE_MPS, NARCOSIS_DEPTH_THRESHOLD_M } = require('./constants');
+const { evaluateTriage } = require('./triage');
 
 const PHASES = {
   DESCEND: 'descend',
@@ -26,19 +9,16 @@ const PHASES = {
   SURFACED: 'surfaced',
 };
 
-// Safe-ascent guideline used as the reference line for what counts as a
-// "rapid ascent" spike (~18 m/min, a common recreational-diving guideline).
-// Configured ascentRate should normally sit at or below this.
-const SAFE_ASCENT_RATE_MPS = 0.3;
-
 class DiveProfileSimulator extends EventEmitter {
   /**
    * @param {object} opts
-   * @param {string} opts.workerId      e.g. "D01"
-   * @param {number} opts.targetDepth   meters, positive (e.g. 18)
-   * @param {number} opts.descentRate   m/s during descent (e.g. 0.5)
-   * @param {number} opts.bottomTimeSec seconds spent at target depth
-   * @param {number} opts.ascentRate    m/s during ascent (e.g. 0.3 — safe guideline ~10m/min)
+   * @param {string} opts.workerId        e.g. "D01"
+   * @param {number} opts.targetDepth     meters, positive (e.g. 18)
+   * @param {number} opts.descentRate     m/s during descent (e.g. 0.5)
+   * @param {number} opts.bottomTimeSec   seconds spent at target depth
+   * @param {number} opts.ascentRate      m/s during normal ascent (e.g. 0.25, should be <= SAFE_ASCENT_RATE_MPS)
+   * @param {number} opts.n2HalfTimeSec   tissue-loading half-time for the N2 model, seconds (default 1200 = 20 min, a fast-compartment-style constant)
+   * @param {number} opts.autoRapidAscentChance  0-1 probability per ascend-phase tick of auto-triggering a rapid-ascent spike (default 0 = disabled, must opt in or call triggerRapidAscent manually)
    */
   constructor({
     workerId = 'D01',
@@ -65,11 +45,25 @@ class DiveProfileSimulator extends EventEmitter {
     this.elapsed = 0;
     this.bottomElapsed = 0;
     this.lastAscentRate = 0;
-
-    // Simple placeholder drains — not the focus of Day 3, kept so the
-    // packet has plausible values. Revisit when their dedicated days land.
+    this.n2Saturation = 0.21; 
+    this.rapidAscentActive = false;
+    this.rapidAscentRemaining = 0;
+    this.rapidAscentRate = 0;
+    this.dcsRiskFlag = false; 
+    this.manualDistressActive = false;
     this.airSupplyPct = 100;
     this.batteryPct = 100;
+  }
+  triggerDistress() {
+    this.manualDistressActive = true;
+  }
+  clearDistress() {
+    this.manualDistressActive = false;
+  }
+  triggerRapidAscent(rateMultiplier = 3, durationSec = 20) {
+    this.rapidAscentActive = true;
+    this.rapidAscentRemaining = durationSec;
+    this.rapidAscentRate = SAFE_ASCENT_RATE_MPS * rateMultiplier;
   }
 
   /**
@@ -94,8 +88,6 @@ class DiveProfileSimulator extends EventEmitter {
         break;
       }
       case PHASES.ASCEND: {
-        // Randomly opt into a spike if configured (Day 6), otherwise use
-        // whatever was queued via triggerRapidAscent().
         if (!this.rapidAscentActive && this.autoRapidAscentChance > 0) {
           if (Math.random() < this.autoRapidAscentChance) {
             this.triggerRapidAscent();
@@ -124,14 +116,11 @@ class DiveProfileSimulator extends EventEmitter {
       default:
         break;
     }
-
-    // ascent_rate per protocol: m/s, positive = ascending.
-    this.lastAscentRate = dt > 0 ? -(depthDelta / dt) : 0;
+   this.lastAscentRate = dt > 0 ? -(depthDelta / dt) : 0;
     this.dcsRiskFlag = this.lastAscentRate > SAFE_ASCENT_RATE_MPS;
 
     this._updateN2Saturation(dt);
 
-    // Placeholder resource drains.
     this.airSupplyPct = Math.max(0, this.airSupplyPct - dt * 0.01);
     this.batteryPct = Math.max(0, this.batteryPct - dt * 0.001);
 
@@ -139,9 +128,32 @@ class DiveProfileSimulator extends EventEmitter {
     this.emit('packet', packet);
     return packet;
   }
+  _updateN2Saturation(dt) {
+    const absolutePressureAtm = 1 + this.depth / 10;
+    const ambientN2Fraction = 0.79 * absolutePressureAtm;
+    const normalizingConstant = 4;
+    const equilibrium = Math.min(1, ambientN2Fraction / normalizingConstant);
 
-  /** Build the current packet, matching shared/protocol.md exactly. */
+    const k = Math.LN2 / this.n2HalfTimeSec; 
+    this.n2Saturation += (equilibrium - this.n2Saturation) * (1 - Math.exp(-k * dt));
+    this.n2Saturation = Math.max(0, Math.min(1, this.n2Saturation));
+  }
   getPacket() {
+    const depthM = Number(this.depth.toFixed(2));
+    const ascentRate = Number(this.lastAscentRate.toFixed(3));
+    const n2Sat = Number(this.n2Saturation.toFixed(3));
+    const airSupplyPct = Math.round(this.airSupplyPct);
+    const { tier, reasons } = evaluateTriage({
+      ascent_rate: ascentRate,
+      n2_saturation_est: n2Sat,
+      depth_m: depthM,
+      air_supply_pct: airSupplyPct,
+    });
+    const finalTier = this.manualDistressActive ? 'red' : tier;
+    const finalReasons = this.manualDistressActive
+      ? [...reasons, 'manual_distress_signal']
+      : reasons;
+
     return {
       worker_id: this.workerId,
       domain: this.domain,
@@ -151,27 +163,23 @@ class DiveProfileSimulator extends EventEmitter {
       motion_g: this._simMotion(),
       pos_x: 0, 
       pos_y: 0, 
-      pos_z: -Number(this.depth.toFixed(2)),
-      triage_tier: 'green', 
+      pos_z: -depthM, 
+      triage_tier: finalTier,
       battery_pct: Math.round(this.batteryPct),
       comms_status: 'ok',
-      depth_m: Number(this.depth.toFixed(2)),
-      ascent_rate: Number(this.lastAscentRate.toFixed(3)),
+      depth_m: depthM,
+      ascent_rate: ascentRate,
       dive_time_elapsed: Math.floor(this.elapsed),
-      n2_saturation_est: Number(this.n2Saturation.toFixed(3)),
-      air_supply_pct: Math.round(this.airSupplyPct),
-
-      // --- extra, non-protocol debug field ---
-      // Not part of shared/protocol.md — handy while testing Day 6 spikes
-      // locally, but Integration/Dashboard should ignore/strip unknown
-      // fields rather than rely on this one.
+      n2_saturation_est: n2Sat,
+      air_supply_pct: airSupplyPct,
       _dcs_risk_flag: this.dcsRiskFlag,
-    };
+      _narcosis_risk_flag: depthM >= NARCOSIS_DEPTH_THRESHOLD_M, 
+      _manual_distress_active: this.manualDistressActive, 
+      _triage_reasons: finalReasons, 
   }
-
   _simHr() {
     const base = this.phase === PHASES.BOTTOM ? 85 : 95;
-    const spikeBoost = this.rapidAscentActive ? 15 : 0; // stress response during a rapid ascent
+    const spikeBoost = this.rapidAscentActive ? 15 : 0; 
     return Math.round(base + spikeBoost + (Math.random() * 6 - 3));
   }
 
@@ -190,4 +198,4 @@ class DiveProfileSimulator extends EventEmitter {
   }
 }
 
-module.exports = { DiveProfileSimulator, PHASES, SAFE_ASCENT_RATE_MPS };
+module.exports = { DiveProfileSimulator, PHASES, SAFE_ASCENT_RATE_MPS, NARCOSIS_DEPTH_THRESHOLD_M };
