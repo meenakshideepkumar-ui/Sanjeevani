@@ -8,18 +8,22 @@ function randomBetween(min, max) {
 class DiverFleet extends EventEmitter {
   /**
    * @param {object} opts
-   * @param {number} opts.size            number of divers to spin up (default 4)
+   * @param {number} opts.size            number of divers to spin up (default 5 — realistic 4-6 crew per Day 18)
    * @param {string} opts.idPrefix        worker_id prefix, per protocol.md convention (default "D")
    * @param {[number, number]} opts.depthRange   [min, max] target depth in meters
    * @param {[number, number]} opts.bottomTimeRange  [min, max] bottom time in seconds
    * @param {number} opts.autoRapidAscentChance  passed through to each diver (Day 6)
+   * @param {number} opts.autoDropoutChance      passed through to each diver (Day 15)
+   * @param {boolean} opts.enableSafetyStop      passed through to each diver (Day 17)
    */
   constructor({
-    size = 4,
+    size = 5,
     idPrefix = 'D',
     depthRange = [12, 28],
     bottomTimeRange = [600, 1200],
     autoRapidAscentChance = 0,
+    autoDropoutChance = 0,
+    enableSafetyStop = true,
   } = {}) {
     super();
 
@@ -34,11 +38,13 @@ class DiverFleet extends EventEmitter {
         bottomTimeSec: Math.round(randomBetween(bottomTimeRange[0], bottomTimeRange[1])),
         ascentRate: Number(randomBetween(0.18, 0.28).toFixed(2)),
         autoRapidAscentChance,
+        autoDropoutChance,
+        enableSafetyStop,
       });
-
-      sim.on('packet', (packet) => {
-        this.emit('packet', packet);
-      });
+      sim.on('packet', (packet) => this.emit('packet', packet));
+      sim.on('signal_lost', (info) => this.emit('signal_lost', info));
+      sim.on('signal_degraded', (info) => this.emit('signal_degraded', info));
+      sim.on('signal_recovered', (info) => this.emit('signal_recovered', info));
 
       this.divers.set(workerId, sim);
     }
@@ -57,9 +63,11 @@ class DiverFleet extends EventEmitter {
     }
     return true;
   }
+
   get(workerId) {
     return this.divers.get(workerId);
   }
+
   getPackets() {
     return Array.from(this.divers.values()).map((sim) => sim.getPacket());
   }
