@@ -1,12 +1,11 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { Heart, Activity, Battery, AlertCircle } from 'lucide-react';
+import { Heart, Activity, Battery, AlertCircle, HardHat } from 'lucide-react';
 import { TelemetryPacket } from './types';
 import { getSocket } from './socket-client';
 
-// Fallback initial data
-const initialData: TelemetryPacket[] = [
+const initialDiveData: TelemetryPacket[] = [
   {
     worker_id: 'DIV-01 (Arjun)',
     domain: 'diver',
@@ -28,8 +27,36 @@ const initialData: TelemetryPacket[] = [
   },
 ];
 
+const initialMineData: TelemetryPacket[] = [
+  {
+    worker_id: 'MINE-01 (Rahul)',
+    domain: 'miner',
+    ts: Date.now(),
+    hr: 85,
+    spo2: 97,
+    motion_g: 0.88,
+    pos_x: 11.8820,
+    pos_y: 75.3850,
+    pos_z: -120.0,
+    triage_tier: 'green',
+    battery_pct: 92,
+    comms_status: 'ok',
+    depth_m: 120.0,
+    ascent_rate: 0.0,
+    dive_time_elapsed: 3600,
+    n2_saturation_est: 0,
+    air_supply_pct: 100,
+  },
+];
+
 export default function Roster({ domain }: { domain: 'dive' | 'mine' }) {
-  const [telemetryList, setTelemetryList] = useState<TelemetryPacket[]>(initialData);
+  const [telemetryList, setTelemetryList] = useState<TelemetryPacket[]>(
+    domain === 'dive' ? initialDiveData : initialMineData
+  );
+
+  useEffect(() => {
+    setTelemetryList(domain === 'dive' ? initialDiveData : initialMineData);
+  }, [domain]);
 
   useEffect(() => {
     const socket = getSocket();
@@ -90,7 +117,7 @@ export default function Roster({ domain }: { domain: 'dive' | 'mine' }) {
             </div>
             <div className="flex items-center gap-1.5">
               <AlertCircle className="h-3.5 w-3.5 text-sky-400" />
-              <span>DEPTH: {(worker as any).depth_m ?? 0}m</span>
+              <span>{domain === 'dive' ? 'DEPTH' : 'SHAFT'}: {(worker as any).depth_m ?? 0}m</span>
             </div>
           </div>
         </div>

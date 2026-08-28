@@ -5,7 +5,6 @@ import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
 
-// Fix missing default icon issue in Leaflet
 const customIcon = new L.Icon({
   iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
   iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
@@ -16,7 +15,11 @@ const customIcon = new L.Icon({
 
 export default function AcousticMap({ domain }: { domain: 'dive' | 'mine' }) {
   const [isMounted, setIsMounted] = useState(false);
-  const position: [number, number] = [11.8745, 75.3704];
+
+  // Position switches based on Dive or Mine mode
+  const position: [number, number] = domain === 'dive' 
+    ? [11.8745, 75.3704] // Kannur Coast (Dive Ops)
+    : [11.8820, 75.3850]; // Inland Mine Sector (Mine Ops)
 
   useEffect(() => {
     setIsMounted(true);
@@ -33,8 +36,9 @@ export default function AcousticMap({ domain }: { domain: 'dive' | 'mine' }) {
   return (
     <div className="w-full h-full min-h-[400px] rounded-lg overflow-hidden border border-slate-800">
       <MapContainer
+        key={domain} // Re-renders cleanly when switching tabs
         center={position}
-        zoom={13}
+        zoom={14}
         scrollWheelZoom={true}
         className="w-full h-full z-0"
       >
@@ -45,7 +49,7 @@ export default function AcousticMap({ domain }: { domain: 'dive' | 'mine' }) {
         <Marker position={position} icon={customIcon}>
           <Popup>
             <div className="text-slate-900 font-sans">
-              <strong>{domain === 'dive' ? 'Diver Node #1' : 'Miner Node #1'}</strong>
+              <strong>{domain === 'dive' ? 'Diver Node #1 (Coastal)' : 'Miner Node #1 (Shaft A)'}</strong>
               <br />
               Status: Operational
             </div>
