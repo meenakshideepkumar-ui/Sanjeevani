@@ -104,7 +104,7 @@
 
 - [ ] Diver Systems
 - [ ] Mine Systems
-- [ ] Dashboard & UI
+- [x] Dashboard & UI
 - [ ] Integration & Safety
 
 *Target: lock as v1 on Day 2, all four sign off before anyone builds detection logic against it.*
