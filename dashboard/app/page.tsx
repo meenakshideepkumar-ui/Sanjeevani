@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import dynamic from 'next/dynamic';
 import Roster from './Roster';
+import VitalsChart from './VitalsChart';
 import AlertBanner from './AlertBanner';
 import { TelemetryPacket } from './types';
 import { getSocket } from './socket-client';
@@ -178,6 +179,7 @@ export default function Dashboard() {
             </h2>
           </div>
           <Roster domain={domain} telemetryList={telemetryList} />
+          <VitalsChart />
         </div>
 
         {/* Right Column: Live Map View */}

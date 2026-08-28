@@ -1,7 +1,7 @@
 'use client';
 
-import React from 'react';
-import { AlertTriangle, ShieldAlert } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { AlertTriangle } from 'lucide-react';
 import { TelemetryPacket } from './types';
 
 interface AlertBannerProps {
@@ -9,7 +9,6 @@ interface AlertBannerProps {
 }
 
 export default function AlertBanner({ telemetry }: AlertBannerProps) {
-  // Filter for high-risk workers
   const activeAlerts = telemetry.filter(
     (worker) =>
       worker.triage_tier === 'red' ||
@@ -17,6 +16,27 @@ export default function AlertBanner({ telemetry }: AlertBannerProps) {
       worker.hr > 100 ||
       worker.spo2 < 95
   );
+
+  useEffect(() => {
+    const redAlert = activeAlerts.some((a) => a.triage_tier === 'red' || a.hr > 110);
+    if (redAlert) {
+      // Play a quick alert chime using Web Audio API
+      try {
+        const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(880, audioCtx.currentTime); // A5 tone
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+      } catch (e) {
+        // Audio context handling fallback
+      }
+    }
+  }, [telemetry]);
 
   if (activeAlerts.length === 0) return null;
 
