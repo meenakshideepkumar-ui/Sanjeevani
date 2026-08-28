@@ -1,11 +1,12 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Heart, Activity, Battery, AlertCircle } from 'lucide-react';
 import { TelemetryPacket } from './types';
+import { getSocket } from './socket-client';
 
-// Mock data to simulate active telemetry packets from server
-const mockTelemetry: TelemetryPacket[] = [
+// Fallback initial data
+const initialData: TelemetryPacket[] = [
   {
     worker_id: 'DIV-01 (Arjun)',
     domain: 'diver',
@@ -25,40 +26,42 @@ const mockTelemetry: TelemetryPacket[] = [
     n2_saturation_est: 32,
     air_supply_pct: 74,
   },
-  {
-    worker_id: 'DIV-02 (Kavya)',
-    domain: 'diver',
-    ts: Date.now(),
-    hr: 112,
-    spo2: 94,
-    motion_g: 2.4,
-    pos_x: 11.8760,
-    pos_y: 75.3720,
-    pos_z: -28.5,
-    triage_tier: 'yellow',
-    battery_pct: 45,
-    comms_status: 'degraded',
-    depth_m: 28.5,
-    ascent_rate: 0.8,
-    dive_time_elapsed: 2100,
-    n2_saturation_est: 68,
-    air_supply_pct: 29,
-  },
 ];
 
 export default function Roster({ domain }: { domain: 'dive' | 'mine' }) {
+  const [telemetryList, setTelemetryList] = useState<TelemetryPacket[]>(initialData);
+
+  useEffect(() => {
+    const socket = getSocket();
+
+    socket.on('telemetry_update', (data: TelemetryPacket) => {
+      setTelemetryList((prev) => {
+        const index = prev.findIndex((item) => item.worker_id === data.worker_id);
+        if (index !== -1) {
+          const updated = [...prev];
+          updated[index] = data;
+          return updated;
+        }
+        return [...prev, data];
+      });
+    });
+
+    return () => {
+      socket.off('telemetry_update');
+    };
+  }, []);
+
   return (
     <div className="flex flex-col gap-3 overflow-y-auto max-h-[500px] pr-1">
-      {mockTelemetry.map((worker) => (
+      {telemetryList.map((worker) => (
         <div
           key={worker.worker_id}
           className={`p-3 rounded-lg border text-xs flex flex-col gap-2 transition-all ${
             worker.triage_tier === 'green'
-              ? 'bg-slate-900/80 border-emerald-500/30 hover:border-emerald-500/60'
-              : 'bg-slate-900/80 border-amber-500/40 hover:border-amber-500/80'
+              ? 'bg-slate-900/80 border-emerald-500/30'
+              : 'bg-slate-900/80 border-amber-500/40'
           }`}
         >
-          {/* Top Info Bar */}
           <div className="flex items-center justify-between font-semibold border-b border-slate-800 pb-2">
             <span className="text-slate-200">{worker.worker_id}</span>
             <span
@@ -72,7 +75,6 @@ export default function Roster({ domain }: { domain: 'dive' | 'mine' }) {
             </span>
           </div>
 
-          {/* Vitals Grid */}
           <div className="grid grid-cols-2 gap-2 text-slate-400 font-mono py-1">
             <div className="flex items-center gap-1.5">
               <Heart className="h-3.5 w-3.5 text-rose-400" />
@@ -88,7 +90,7 @@ export default function Roster({ domain }: { domain: 'dive' | 'mine' }) {
             </div>
             <div className="flex items-center gap-1.5">
               <AlertCircle className="h-3.5 w-3.5 text-sky-400" />
-              <span>DEPTH: {(worker as any).depth_m}m</span>
+              <span>DEPTH: {(worker as any).depth_m ?? 0}m</span>
             </div>
           </div>
         </div>
