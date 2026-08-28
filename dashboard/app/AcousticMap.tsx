@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import 'leaflet/dist/leaflet.css';
 import L from 'leaflet';
@@ -15,8 +15,20 @@ const customIcon = new L.Icon({
 });
 
 export default function AcousticMap({ domain }: { domain: 'dive' | 'mine' }) {
-  // Default coordinate center (offshore / operational site)
+  const [isMounted, setIsMounted] = useState(false);
   const position: [number, number] = [11.8745, 75.3704];
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
+  if (!isMounted) {
+    return (
+      <div className="w-full h-full min-h-[400px] rounded-lg bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500 text-xs">
+        Loading Operational Map...
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-full min-h-[400px] rounded-lg overflow-hidden border border-slate-800">

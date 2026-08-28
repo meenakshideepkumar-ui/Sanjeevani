@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { Shield, Activity, Waves, Pickaxe, Radio, AlertTriangle } from 'lucide-react';
 import dynamic from 'next/dynamic';
-
+import Roster from './Roster';
 const AcousticMap = dynamic(() => import('./AcousticMap'), { ssr: false });
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'dive' | 'mine'>('dive');
@@ -65,11 +65,7 @@ export default function Home() {
             <Activity className="h-4 w-4 text-cyan-400" />
             Active {activeTab === 'dive' ? 'Divers' : 'Miners'} Roster
           </h2>
-          <div className="flex-1 border border-dashed border-slate-800 rounded-lg flex items-center justify-center p-4 text-center">
-            <p className="text-xs text-slate-500">
-              Waiting for telemetry packets from server...
-            </p>
-          </div>
+          <Roster domain={activeTab} />
         </aside>
 
         {/* Main Map / Operations Display */}
