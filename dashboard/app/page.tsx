@@ -2,7 +2,9 @@
 
 import React, { useState } from 'react';
 import { Shield, Activity, Waves, Pickaxe, Radio, AlertTriangle } from 'lucide-react';
+import dynamic from 'next/dynamic';
 
+const AcousticMap = dynamic(() => import('./AcousticMap'), { ssr: false });
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'dive' | 'mine'>('dive');
 
@@ -80,9 +82,7 @@ export default function Home() {
           </div>
 
           <div className="flex-1 my-4 border border-dashed border-slate-800 rounded-lg bg-slate-950/40 flex items-center justify-center min-h-[350px]">
-            <p className="text-slate-500 text-sm">
-              Map Component Placeholder ({activeTab === 'dive' ? 'Depth & Positioning' : 'Tunnel & Level Grid'})
-            </p>
+            <AcousticMap domain={activeTab} />
           </div>
         </section>
       </div>
