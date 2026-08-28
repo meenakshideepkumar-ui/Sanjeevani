@@ -1,101 +1,37 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
-import { Heart, Activity, Battery, AlertCircle, HardHat } from 'lucide-react';
+import React from 'react';
+import { Heart, Activity, Battery, AlertCircle } from 'lucide-react';
 import { TelemetryPacket } from './types';
-import { getSocket } from './socket-client';
 
-const initialDiveData: TelemetryPacket[] = [
-  {
-    worker_id: 'DIV-01 (Arjun)',
-    domain: 'diver',
-    ts: Date.now(),
-    hr: 78,
-    spo2: 98,
-    motion_g: 1.02,
-    pos_x: 11.8745,
-    pos_y: 75.3704,
-    pos_z: -14.2,
-    triage_tier: 'green',
-    battery_pct: 88,
-    comms_status: 'ok',
-    depth_m: 14.2,
-    ascent_rate: 0.1,
-    dive_time_elapsed: 1240,
-    n2_saturation_est: 32,
-    air_supply_pct: 74,
-  },
-];
+interface RosterProps {
+  domain: 'dive' | 'mine';
+  telemetryList?: TelemetryPacket[];
+}
 
-const initialMineData: TelemetryPacket[] = [
-  {
-    worker_id: 'MINE-01 (Rahul)',
-    domain: 'miner',
-    ts: Date.now(),
-    hr: 85,
-    spo2: 97,
-    motion_g: 0.88,
-    pos_x: 11.8820,
-    pos_y: 75.3850,
-    pos_z: -120.0,
-    triage_tier: 'green',
-    battery_pct: 92,
-    comms_status: 'ok',
-    depth_m: 120.0,
-    ascent_rate: 0.0,
-    dive_time_elapsed: 3600,
-    n2_saturation_est: 0,
-    air_supply_pct: 100,
-  },
-];
-
-export default function Roster({ domain }: { domain: 'dive' | 'mine' }) {
-  const [telemetryList, setTelemetryList] = useState<TelemetryPacket[]>(
-    domain === 'dive' ? initialDiveData : initialMineData
-  );
-
-  useEffect(() => {
-    setTelemetryList(domain === 'dive' ? initialDiveData : initialMineData);
-  }, [domain]);
-
-  useEffect(() => {
-    const socket = getSocket();
-
-    socket.on('telemetry_update', (data: TelemetryPacket) => {
-      setTelemetryList((prev) => {
-        const index = prev.findIndex((item) => item.worker_id === data.worker_id);
-        if (index !== -1) {
-          const updated = [...prev];
-          updated[index] = data;
-          return updated;
-        }
-        return [...prev, data];
-      });
-    });
-
-    return () => {
-      socket.off('telemetry_update');
-    };
-  }, []);
-
+export default function Roster({ domain, telemetryList = [] }: RosterProps) {
   return (
     <div className="flex flex-col gap-3 overflow-y-auto max-h-[500px] pr-1">
       {telemetryList.map((worker) => (
         <div
           key={worker.worker_id}
           className={`p-3 rounded-lg border text-xs flex flex-col gap-2 transition-all ${
-            worker.triage_tier === 'green'
-              ? 'bg-slate-900/80 border-emerald-500/30'
-              : 'bg-slate-900/80 border-amber-500/40'
+            worker.triage_tier === 'red'
+              ? 'bg-rose-950/40 border-rose-500/60 shadow-lg shadow-rose-900/20'
+              : worker.triage_tier === 'yellow'
+              ? 'bg-amber-950/40 border-amber-500/50'
+              : 'bg-slate-900/80 border-emerald-500/30'
           }`}
         >
           <div className="flex items-center justify-between font-semibold border-b border-slate-800 pb-2">
             <span className="text-slate-200">{worker.worker_id}</span>
             <span
               className={`px-2 py-0.5 rounded-full text-[10px] uppercase font-mono ${
-                worker.triage_tier === 'green'
-                  ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
-                  : 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                worker.triage_tier === 'red'
+                  ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40 animate-pulse'
+                  : worker.triage_tier === 'yellow'
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                  : 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
               }`}
             >
               {worker.triage_tier}
@@ -104,12 +40,12 @@ export default function Roster({ domain }: { domain: 'dive' | 'mine' }) {
 
           <div className="grid grid-cols-2 gap-2 text-slate-400 font-mono py-1">
             <div className="flex items-center gap-1.5">
-              <Heart className="h-3.5 w-3.5 text-rose-400" />
-              <span>{worker.hr} BPM</span>
+              <Heart className={`h-3.5 w-3.5 ${worker.hr > 100 ? 'text-rose-500 animate-ping' : 'text-rose-400'}`} />
+              <span className={worker.hr > 100 ? 'text-rose-400 font-bold' : ''}>{worker.hr} BPM</span>
             </div>
             <div className="flex items-center gap-1.5">
-              <Activity className="h-3.5 w-3.5 text-cyan-400" />
-              <span>{worker.spo2}% SpO2</span>
+              <Activity className={`h-3.5 w-3.5 ${worker.spo2 < 95 ? 'text-rose-500' : 'text-cyan-400'}`} />
+              <span className={worker.spo2 < 95 ? 'text-rose-400 font-bold' : ''}>{worker.spo2}% SpO2</span>
             </div>
             <div className="flex items-center gap-1.5">
               <Battery className="h-3.5 w-3.5 text-emerald-400" />
