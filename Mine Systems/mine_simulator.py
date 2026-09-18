@@ -44,15 +44,25 @@ Day 11 - signal dropout
     from phase: a miner can be healthy, strained or down AND offline.
   - while dark, the miner's state keeps advancing silently (the world doesn't
     freeze - a casualty that develops offline is still there on reconnect),
-    but nothing is emitted. A panic press made while dark is BUFFERED by the
-    device and sent with the first packet after reconnect; one-shot impact
-    spikes that happen while dark are simply lost.
+    but nothing is emitted.
   - the run loop acts as the server watchdog: it asks the triage engine
     signal_status() every round and, on each change (ok -> stale -> lost ->
     ok), prints to stderr and emits ONE event line
         {"type": "signal_status", "worker_id": ..., "status": ..., ...}
     alongside the normal packets (packets have no "type" key).
   - demo script now also drops M08 for ~25 s.
+
+Day 13 - dropout fixes
+  - the device now BUFFERS what it can't send: the biggest impact spike and
+    any panic press made while dark are delivered with the first packet after
+    reconnect (before, a hit during a dropout was lost, so triage never saw
+    "impact + crash" and the casualty never went Red). The buffered impact
+    carries the reconnect timestamp so it counts as "recent"; a buffered
+    panic press also carries "panic_ts" (when it really happened) so the
+    since-hit timer counts from the press, not from reconnect.
+  - signal_thresholds(interval): stale/lost limits scale with --interval so a
+    slow packet rate is not mistaken for a dropout (fixed 7 s / 12 s only
+    hold for the default 3 s cadence).
 
 Usage:
   python mine_simulator.py                      # normal run, all miners healthy-ish
@@ -63,11 +73,12 @@ Usage:
 
 import argparse
 import json
+import math
 import random
 import sys
 import time
 
-from triage import TriageEngine
+from triage import TriageEngine, THRESHOLDS
 
 # --- Config -----------------------------------------------------------
 
@@ -161,6 +172,8 @@ def new_state():
     s["impact_pending"] = False    # emit the impact spike on the next packet
     s["panic_pending"] = False     # Day 10: emit panic=True on the next packet only
     s["dropout"] = False           # Day 11: device offline - packets are not sent
+    s["buffered_impact_g"] = 0.0   # Day 13: biggest impact seen while dark
+    s["buffered_panic_ts"] = None  # Day 13: when a panic press happened while dark
     return s
 
 
@@ -186,6 +199,18 @@ def trigger_panic(state):
     state["panic_pending"] = True
 
 
+def signal_thresholds(interval):
+    """
+    Day 13: stale/lost limits for a given packet interval. Never below the
+    defaults (7 s / 12 s, tuned for 3 s), but at least ~2 and ~4 missed
+    packets so a slow --interval doesn't look like a dropout.
+    """
+    return {
+        "signal_stale_s": max(THRESHOLDS["signal_stale_s"], math.ceil(2 * interval + 1)),
+        "signal_lost_s": max(THRESHOLDS["signal_lost_s"], math.ceil(4 * interval)),
+    }
+
+
 def start_dropout(state):
     """Day 11: device goes dark. State keeps evolving, nothing is transmitted."""
     state["dropout"] = True
@@ -201,6 +226,7 @@ def end_dropout(state):
 def build_packet(worker_id, pos, state, profile, ts=None):
     """Advance one miner by one tick and return the raw packet (no triage tier yet)."""
     phase = state["phase"]
+    now_ts = int(time.time()) if ts is None else ts
 
     # motion: light shift motion, unless this is the impact tick
     motion_g = round(random.uniform(0.0, 1.5), 2)
@@ -212,6 +238,23 @@ def build_packet(worker_id, pos, state, profile, ts=None):
     # Day 10: one-shot panic flag - consumed here regardless of phase
     panic_tick = state["panic_pending"]
     state["panic_pending"] = False
+
+    # Day 13: a dark device remembers the biggest impact and any panic press,
+    # and delivers them with its first packet once the link is back.
+    panic_ts = None
+    if state["dropout"]:
+        if motion_g >= IMPACT_RANGE[0]:
+            state["buffered_impact_g"] = max(state["buffered_impact_g"], motion_g)
+        if panic_tick and state["buffered_panic_ts"] is None:
+            state["buffered_panic_ts"] = now_ts
+    else:
+        if state["buffered_impact_g"]:
+            motion_g = max(motion_g, state["buffered_impact_g"])
+            state["buffered_impact_g"] = 0.0
+        if state["buffered_panic_ts"] is not None:
+            panic_tick = True
+            panic_ts = state["buffered_panic_ts"]
+            state["buffered_panic_ts"] = None
 
     # vitals
     if phase == "normal":
@@ -242,10 +285,10 @@ def build_packet(worker_id, pos, state, profile, ts=None):
         state["co_ppm"] = settle(state["co_ppm"], BASELINE["co_ppm"], 1, 0.1, 0, 200)
         state["ch4_pct"] = settle(state["ch4_pct"], BASELINE["ch4_pct"], 0.02, 0.1, 0, 5)
 
-    return {
+    packet = {
         "worker_id": worker_id,
         "domain": "miner",
-        "ts": int(time.time()) if ts is None else ts,
+        "ts": now_ts,
         "hr": int(state["hr"]),
         "spo2": int(state["spo2"]),
         "motion_g": motion_g,
@@ -263,6 +306,9 @@ def build_packet(worker_id, pos, state, profile, ts=None):
         "panic": panic_tick,
         "triage_tier": "green",  # overwritten by the triage engine before emitting
     }
+    if panic_ts is not None:
+        packet["panic_ts"] = panic_ts  # Day 13: only present on a buffered press
+    return packet
 
 
 # --- Output ---------------------------------------------------------------
@@ -336,7 +382,7 @@ def run(interval, demo, ws_url, seed):
         random.seed(seed)
 
     states = {wid: new_state() for wid in MINERS}
-    engine = TriageEngine()
+    engine = TriageEngine(signal_thresholds(interval))
     emitter = Emitter(ws_url)
     script = sorted(DEMO_SCRIPT) if demo else []
     last_tier = {}
@@ -367,10 +413,7 @@ def run(interval, demo, ws_url, seed):
                 profile = VENTILATION_PROFILE.get(wid, "steady")
                 packet = build_packet(wid, pos, states[wid], profile)
                 if states[wid]["dropout"]:
-                    # dark: state advanced, nothing sent. Device buffers a panic press.
-                    if packet["panic"]:
-                        states[wid]["panic_pending"] = True
-                    continue
+                    continue  # dark: state advanced (and events buffered), nothing sent
                 result = engine.evaluate(packet)
                 packet["triage_tier"] = result.tier
                 emitter.send(packet)
