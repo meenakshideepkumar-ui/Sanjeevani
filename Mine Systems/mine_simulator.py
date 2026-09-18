@@ -1,6 +1,6 @@
 """
 Sanjeevani - Mine Systems
-Day 7: casualty events + triage wired in + live output.
+Day 11: signal dropout on top of casualty events + triage + live output.
 
 Builds on the Day 5 simulator (gas drift / slow accumulation).
 
@@ -37,6 +37,22 @@ Day 10 - manual panic-button trigger
     a real device reports "button was pressed" once, not "button is being
     held", and a panic press can happen to a miner who is otherwise
     perfectly healthy (no strain, no hit).
+
+Day 11 - signal dropout
+  - start_dropout(state) / end_dropout(state): the miner's device goes dark
+    (packets stop) and later comes back. It is a per-miner flag, separate
+    from phase: a miner can be healthy, strained or down AND offline.
+  - while dark, the miner's state keeps advancing silently (the world doesn't
+    freeze - a casualty that develops offline is still there on reconnect),
+    but nothing is emitted. A panic press made while dark is BUFFERED by the
+    device and sent with the first packet after reconnect; one-shot impact
+    spikes that happen while dark are simply lost.
+  - the run loop acts as the server watchdog: it asks the triage engine
+    signal_status() every round and, on each change (ok -> stale -> lost ->
+    ok), prints to stderr and emits ONE event line
+        {"type": "signal_status", "worker_id": ..., "status": ..., ...}
+    alongside the normal packets (packets have no "type" key).
+  - demo script now also drops M08 for ~25 s.
 
 Usage:
   python mine_simulator.py                      # normal run, all miners healthy-ish
@@ -101,10 +117,14 @@ CASUALTY_PULL = 0.4
 IMPACT_RANGE = (5.5, 8.0)  # g, the one-shot impact spike (normal motion is 0-1.5)
 
 # Demo story: (seconds after start, worker, phase)
+# `action` is a phase name, or "dropout" / "reconnect" (Day 11).
 DEMO_SCRIPT = [
     (15, "M07", "strain"),
+    (24, "M08", "dropout"),
     (36, "M07", "hit"),
+    (50, "M08", "reconnect"),
 ]
+LINK_ACTIONS = ("dropout", "reconnect")
 
 
 # --- Helpers ------------------------------------------------------------
@@ -140,6 +160,7 @@ def new_state():
     s["phase"] = "normal"          # normal | strain | hit
     s["impact_pending"] = False    # emit the impact spike on the next packet
     s["panic_pending"] = False     # Day 10: emit panic=True on the next packet only
+    s["dropout"] = False           # Day 11: device offline - packets are not sent
     return s
 
 
@@ -163,6 +184,16 @@ def trigger_panic(state):
     once, honestly, like a real device would.
     """
     state["panic_pending"] = True
+
+
+def start_dropout(state):
+    """Day 11: device goes dark. State keeps evolving, nothing is transmitted."""
+    state["dropout"] = True
+
+
+def end_dropout(state):
+    """Day 11: link is back; the next round transmits again."""
+    state["dropout"] = False
 
 
 # --- Packet builder -------------------------------------------------------
@@ -286,6 +317,10 @@ class Emitter:
                 print("[ws] connection lost - will retry", file=sys.stderr)
                 self.ws = None
 
+    def send_event(self, event):
+        """Same channel as packets, but for non-packet messages (has a "type" key)."""
+        self.send(event)
+
     def close(self):
         if self.ws is not None:
             try:
@@ -305,25 +340,37 @@ def run(interval, demo, ws_url, seed):
     emitter = Emitter(ws_url)
     script = sorted(DEMO_SCRIPT) if demo else []
     last_tier = {}
+    last_signal = {wid: "ok" for wid in MINERS}
     start = time.time()
 
     print(f"Mine simulator started for {len(MINERS)} miners: {', '.join(MINERS)} - Ctrl+C to stop", file=sys.stderr)
     print(f"Ventilation profiles: {VENTILATION_PROFILE}", file=sys.stderr)
     if demo:
-        print(f"Demo script (s, miner, phase): {script}", file=sys.stderr)
+        print(f"Demo script (s, miner, phase/link action): {script}", file=sys.stderr)
     print(file=sys.stderr)
 
     try:
         while True:
             elapsed = time.time() - start
             while script and script[0][0] <= elapsed:
-                _, wid, phase = script.pop(0)
-                set_phase(states[wid], phase)
-                print(f"[demo] t={elapsed:.0f}s {wid} -> phase '{phase}'", file=sys.stderr)
+                _, wid, action = script.pop(0)
+                if action == "dropout":
+                    start_dropout(states[wid])
+                elif action == "reconnect":
+                    end_dropout(states[wid])
+                else:
+                    set_phase(states[wid], action)
+                label = "link" if action in LINK_ACTIONS else "phase"
+                print(f"[demo] t={elapsed:.0f}s {wid} -> {label} '{action}'", file=sys.stderr)
 
             for wid, pos in MINERS.items():
                 profile = VENTILATION_PROFILE.get(wid, "steady")
                 packet = build_packet(wid, pos, states[wid], profile)
+                if states[wid]["dropout"]:
+                    # dark: state advanced, nothing sent. Device buffers a panic press.
+                    if packet["panic"]:
+                        states[wid]["panic_pending"] = True
+                    continue
                 result = engine.evaluate(packet)
                 packet["triage_tier"] = result.tier
                 emitter.send(packet)
@@ -331,6 +378,20 @@ def run(interval, demo, ws_url, seed):
                 if result.tier != last_tier.get(wid, "green"):
                     print(f"[triage] {wid}: {last_tier.get(wid, 'green')} -> {result.tier}  ({'; '.join(result.reasons)})", file=sys.stderr)
                 last_tier[wid] = result.tier
+                if result.reconnected_after_s is not None:
+                    print(f"[signal] {wid}: back online after {result.reconnected_after_s}s of silence", file=sys.stderr)
+
+            # Day 11 watchdog: has anyone gone quiet (or come back)?
+            now = int(time.time())
+            for wid in MINERS:
+                sig = engine.signal_status(wid, now)
+                if sig["status"] != last_signal[wid] and sig["status"] != "unknown":
+                    print(f"[signal] {wid}: {last_signal[wid]} -> {sig['status']}  "
+                          f"(silent {sig['silent_for_s']}s, last known tier {sig['last_tier']})", file=sys.stderr)
+                    emitter.send_event({"type": "signal_status", "worker_id": wid, "ts": now,
+                                        "status": sig["status"], "silent_for_s": sig["silent_for_s"],
+                                        "last_tier": sig["last_tier"]})
+                    last_signal[wid] = sig["status"]
 
             time.sleep(interval)
     except KeyboardInterrupt:
