@@ -95,6 +95,42 @@ the tier:
 Day 13: an optional `panic_ts` on the packet (set by a device that buffered
 the press while offline) is used as hit_ts for a panic-only Red.
 
+Day 15: edge-case pass - false positives and multi-casualty.
+
+  Stumble vs casualty. Impact and crash only had to land within
+  IMPACT_WINDOW_S of each other, not be causally linked. A worker who
+  knocked a knee and then sprinted (impact 5.2 g, HR climbing on its own to
+  141 six seconds later) was declared a Red casualty. The discriminator is
+  that SpO2 is the line exertion does NOT move: a sprint takes HR to 150 and
+  leaves SpO2 at 96, while blood loss takes HR up AND SpO2 down. So high HR
+  counts as a crash ONLY when SpO2 has dropped with it (<= crash_hr_pair_spo2
+  - a milder drop than crash_spo2, because the pair is the signal and neither
+  half needs to be extreme on its own).
+
+  "Sustained for two packets" was tried as a second route in and dropped:
+  sustained tachycardia is precisely what exertion looks like, so a worker
+  hauling load after a knock came straight back through it. The reason string
+  still notes (sustained) when the high HR carried over, for the card.
+
+  An SpO2 crash and a bradycardic HR crash still stand alone: neither is an
+  exertion pattern after an impact.
+
+  KNOWN TRADE-OFF, worth having ready for Day 18: in early hemorrhage,
+  compensation holds SpO2 near normal while HR climbs - that is the whole
+  premise behind compensatory-reserve work. Such a worker reads Yellow, not
+  Red, until SpO2 falls. That is deliberate: Yellow is still a visible pin
+  with its reasons attached, while Red is latched and un-ignorable, so a
+  false Red costs more here than a slightly late one.
+
+  Blast hint recency. _classify_pattern read last_impact_g with no recency
+  check, so a panic press long after an old knock inherited its g-force and
+  came out as "blast". Only an impact still inside IMPACT_WINDOW_S may drive
+  the blast pattern now.
+
+  Multi-casualty: all state is keyed per worker, so simultaneous casualties
+  classify independently - no cross-talk, no shared latch. Covered by tests
+  rather than by a code change.
+
 The engine has no clock (still pure logic): the caller passes `now`, using
 the same time base as packet["ts"].
 """
@@ -118,6 +154,7 @@ THRESHOLDS = {
     # --- red: vitals crash (only counts if an impact is recent) ---
     "crash_spo2": 89,        # %,   <= this
     "crash_hr_high": 140,    # bpm, >= this (shock-type tachycardia)
+    "crash_hr_pair_spo2": 93,  # %, high HR only counts as a crash if SpO2 <= this (Day 15)
     "crash_hr_low": 45,      # bpm, <= this
     "shock_hr": 120,         # bpm, >= this WITH an SpO2 crash reads as shock, not breathing (Day 12)
     # --- yellow: gas (mine domain) ---
@@ -244,6 +281,7 @@ class TriageEngine:
                 "last_impact_ts": None, "last_impact_g": None,
                 "red": False, "hit_ts": None, "injury_hint": None,
                 "prev_hr": None, "prev_spo2": None, "manual_trigger": False,
+                "prev_hr_high": False,
                 "last_seen_ts": None, "last_tier": None,
             }
         )
@@ -272,11 +310,22 @@ class TriageEngine:
         )
 
         # 2. vitals crash?
+        # Day 15: tachycardia on its own is NOT a crash - exertion produces it
+        # too. It only counts when the oxygen line moves with it, or when it
+        # is sustained across two packets. See the module docstring.
+        hr_high = hr is not None and hr >= t["crash_hr_high"]
+        was_hr_high = st["prev_hr_high"]
+        st["prev_hr_high"] = hr_high
+
         crash = []
         if spo2 is not None and spo2 <= t["crash_spo2"]:
             crash.append(f"SpO2 {spo2} <= {t['crash_spo2']}")
-        if hr is not None and hr >= t["crash_hr_high"]:
-            crash.append(f"HR {hr} >= {t['crash_hr_high']}")
+        if hr_high and spo2 is not None and spo2 <= t["crash_hr_pair_spo2"]:
+            sustained = " (sustained)" if was_hr_high else ""
+            crash.append(
+                f"HR {hr} >= {t['crash_hr_high']} with SpO2 {spo2} "
+                f"<= {t['crash_hr_pair_spo2']}{sustained}"
+            )
         if hr is not None and hr <= t["crash_hr_low"]:
             crash.append(f"HR {hr} <= {t['crash_hr_low']}")
 
@@ -302,7 +351,15 @@ class TriageEngine:
                 else (min(panic_ts, ts) if panic_ts is not None else ts)
             )
             st["manual_trigger"] = panic
-            hint = self._classify_pattern(packet, st["last_impact_g"], hr, crash)
+            # Day 15: only a RECENT impact may drive the blast pattern. Without
+            # this, a panic press long after an old knock inherits its g-force
+            # and reads as "blast" in the card and the report.
+            hint = self._classify_pattern(
+                packet,
+                st["last_impact_g"] if recent_impact else None,
+                hr,
+                crash,
+            )
             st["injury_hint"] = hint
             reasons = []
             if panic:
