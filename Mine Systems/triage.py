@@ -49,6 +49,21 @@ than just "red":
 The hint is decided ONCE, at the moment Red is first declared, and kept in
 the latched state - vitals drift back toward baseline while latched, so
 recomputing every packet would make the hint flicker.
+
+Day 9: "since hit" timer and HR/SpO2 trend arrows.
+
+  since_hit_s   seconds since hit_ts, on every RED result (fresh or
+                latched). None when the worker isn't red.
+  hr_trend      "rising" / "falling" / "steady", comparing this packet's HR
+  spo2_trend    to the previous packet's HR/SpO2 for that worker. A small
+                dead-band (*_trend_delta) keeps normal packet-to-packet
+                noise from flipping the arrow back and forth. None on a
+                worker's first packet (nothing to compare against yet) or
+                when the field is missing from the packet.
+
+  Trends are computed on EVERY packet regardless of tier - a rising HR is
+  useful to see before someone even reaches yellow, not just during a
+  casualty.
 """
 
 from dataclasses import dataclass, field
@@ -78,6 +93,9 @@ THRESHOLDS = {
     # --- Day 8: blast pattern ---
     "blast_impact_g": 7.5,   # g, well above a normal stumble/hit spike
     "blast_seismic": 0.5,    # seismic reading, baseline noise is ~0.01-0.03
+    # --- Day 9: trend dead-band ---
+    "hr_trend_delta": 3,     # bpm change between consecutive packets to call it rising/falling
+    "spo2_trend_delta": 1,   # %   change between consecutive packets to call it rising/falling
 }
 
 
@@ -86,6 +104,9 @@ class TriageResult:
     tier: str
     reasons: list = field(default_factory=list)
     injury_hint: str = None    # only set on RED; see module docstring
+    since_hit_s: int = None    # only set on RED; see module docstring
+    hr_trend: str = None       # "rising" / "falling" / "steady" / None
+    spo2_trend: str = None     # "rising" / "falling" / "steady" / None
 
 
 def _first(packet, *keys):
@@ -129,14 +150,24 @@ class TriageEngine:
             return BREATHING
         return UNSPECIFIED
 
+    def _trend(self, current, previous, delta):
+        """Day 9: rising/falling/steady, with a dead-band to kill noise flicker."""
+        if current is None or previous is None:
+            return None
+        diff = current - previous
+        if abs(diff) < delta:
+            return "steady"
+        return "rising" if diff > 0 else "falling"
+
     def evaluate(self, packet):
-        """Classify one packet. Returns TriageResult(tier, reasons, injury_hint)."""
+        """Classify one packet. Returns a TriageResult."""
         wid = _first(packet, "worker_id", "id")
         ts = packet["ts"]
         st = self._state.setdefault(
             wid, {
                 "last_impact_ts": None, "last_impact_g": None,
                 "red": False, "hit_ts": None, "injury_hint": None,
+                "prev_hr": None, "prev_spo2": None,
             }
         )
         t = self.t
@@ -144,6 +175,14 @@ class TriageEngine:
         hr = _first(packet, "hr")
         spo2 = _first(packet, "spo2")
         impact = _first(packet, "motion_g", "impact_g")
+
+        # Day 9: trend vs the PREVIOUS packet, before we overwrite prev_* below.
+        hr_trend = self._trend(hr, st["prev_hr"], t["hr_trend_delta"])
+        spo2_trend = self._trend(spo2, st["prev_spo2"], t["spo2_trend_delta"])
+        if hr is not None:
+            st["prev_hr"] = hr
+        if spo2 is not None:
+            st["prev_spo2"] = spo2
 
         # 1. track impacts
         if impact is not None and impact >= t["impact_g"]:
@@ -169,6 +208,9 @@ class TriageEngine:
                 RED,
                 [f"latched since ts={st['hit_ts']} (reset() to clear)"],
                 injury_hint=st["injury_hint"],
+                since_hit_s=ts - st["hit_ts"],
+                hr_trend=hr_trend,
+                spo2_trend=spo2_trend,
             )
         if recent_impact and crash:
             st["red"] = True
@@ -179,6 +221,9 @@ class TriageEngine:
                 RED,
                 [f"impact {st['last_impact_g']} g within {t['impact_window_s']}s"] + crash,
                 injury_hint=hint,
+                since_hit_s=ts - st["hit_ts"],
+                hr_trend=hr_trend,
+                spo2_trend=spo2_trend,
             )
 
         # 4. YELLOW: any single warning sign
@@ -201,9 +246,9 @@ class TriageEngine:
         if o2 is not None and o2 < t["o2_pct_low"]:
             why.append(f"O2 {o2}% < {t['o2_pct_low']}")
         if why:
-            return TriageResult(YELLOW, why)
+            return TriageResult(YELLOW, why, hr_trend=hr_trend, spo2_trend=spo2_trend)
 
-        return TriageResult(GREEN, [])
+        return TriageResult(GREEN, [], hr_trend=hr_trend, spo2_trend=spo2_trend)
 
     def reset(self, worker_id=None):
         """Clear latched Red / impact memory for one worker, or everyone."""
