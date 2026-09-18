@@ -64,6 +64,17 @@ Day 9: "since hit" timer and HR/SpO2 trend arrows.
   Trends are computed on EVERY packet regardless of tier - a rising HR is
   useful to see before someone even reaches yellow, not just during a
   casualty.
+
+Day 10: manual panic-button trigger. A `panic` (or `panic_button`) truthy
+field on the packet forces Red immediately - no impact, no crash, no
+IMPACT_WINDOW_S needed. This models the worker/soldier consciously hitting
+a distress button rather than the system inferring a casualty from vitals.
+It still latches like any other Red, and injury-pattern classification
+still runs against whatever vitals happen to be in that packet (so a panic
+press accompanied by a real crash still gets a real hint) - it just
+doesn't require them. `TriageResult.manual_trigger` is True for the
+lifetime of a Red that was (at least partly) declared this way, so the UI
+can show "SOS pressed" distinctly from an auto-detected casualty.
 """
 
 from dataclasses import dataclass, field
@@ -107,6 +118,7 @@ class TriageResult:
     since_hit_s: int = None    # only set on RED; see module docstring
     hr_trend: str = None       # "rising" / "falling" / "steady" / None
     spo2_trend: str = None     # "rising" / "falling" / "steady" / None
+    manual_trigger: bool = False   # True if (any part of) this RED came from the panic button
 
 
 def _first(packet, *keys):
@@ -167,7 +179,7 @@ class TriageEngine:
             wid, {
                 "last_impact_ts": None, "last_impact_g": None,
                 "red": False, "hit_ts": None, "injury_hint": None,
-                "prev_hr": None, "prev_spo2": None,
+                "prev_hr": None, "prev_spo2": None, "manual_trigger": False,
             }
         )
         t = self.t
@@ -175,6 +187,7 @@ class TriageEngine:
         hr = _first(packet, "hr")
         spo2 = _first(packet, "spo2")
         impact = _first(packet, "motion_g", "impact_g")
+        panic = bool(_first(packet, "panic", "panic_button"))
 
         # Day 9: trend vs the PREVIOUS packet, before we overwrite prev_* below.
         hr_trend = self._trend(hr, st["prev_hr"], t["hr_trend_delta"])
@@ -202,7 +215,7 @@ class TriageEngine:
         if hr is not None and hr <= t["crash_hr_low"]:
             crash.append(f"HR {hr} <= {t['crash_hr_low']}")
 
-        # 3. RED: latched, or impact + crash together
+        # 3. RED: latched, or impact + crash together, or the panic button
         if st["red"]:
             return TriageResult(
                 RED,
@@ -211,19 +224,29 @@ class TriageEngine:
                 since_hit_s=ts - st["hit_ts"],
                 hr_trend=hr_trend,
                 spo2_trend=spo2_trend,
+                manual_trigger=st["manual_trigger"],
             )
-        if recent_impact and crash:
+        auto_trigger = recent_impact and crash
+        if auto_trigger or panic:
             st["red"] = True
-            st["hit_ts"] = st["last_impact_ts"]
+            st["hit_ts"] = st["last_impact_ts"] if auto_trigger else ts
+            st["manual_trigger"] = panic
             hint = self._classify_pattern(packet, st["last_impact_g"], hr, crash)
             st["injury_hint"] = hint
+            reasons = []
+            if panic:
+                reasons.append("manual panic button pressed")
+            if auto_trigger:
+                reasons.append(f"impact {st['last_impact_g']} g within {t['impact_window_s']}s")
+                reasons.extend(crash)
             return TriageResult(
                 RED,
-                [f"impact {st['last_impact_g']} g within {t['impact_window_s']}s"] + crash,
+                reasons,
                 injury_hint=hint,
                 since_hit_s=ts - st["hit_ts"],
                 hr_trend=hr_trend,
                 spo2_trend=spo2_trend,
+                manual_trigger=panic,
             )
 
         # 4. YELLOW: any single warning sign
