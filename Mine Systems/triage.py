@@ -30,11 +30,34 @@ That is also the false-positive guard for the Day 15 stumble-vs-casualty check.
 Field names: accepts the mine-domain packet (worker_id / motion_g) and the
 protocol.md v0 draft names (id / impact_g). Missing fields are skipped, not
 treated as errors.
+
+Day 8: injury-pattern hint. Once a casualty goes Red, guess *what kind* of
+casualty it is from the same packet fields, so the UI/report can say more
+than just "red":
+
+  bleeding_shock  HR crashed HIGH (compensatory tachycardia) - classic
+                  blood-loss/shock signature.
+  breathing       SpO2 crashed but HR did NOT spike high (normal or even
+                  crashed low) - points at an airway/oxygen problem, not
+                  blood loss.
+  blast           the impact itself is far above a normal stumble/hit AND
+                  the seismic reading spiked at the same time - a
+                  structural/explosive event, not a fall.
+  unspecified     Red fired (e.g. from the latch) without enough signal to
+                  tell these apart.
+
+The hint is decided ONCE, at the moment Red is first declared, and kept in
+the latched state - vitals drift back toward baseline while latched, so
+recomputing every packet would make the hint flicker.
 """
 
 from dataclasses import dataclass, field
 
 GREEN, YELLOW, RED = "green", "yellow", "red"
+
+BLEEDING_SHOCK, BREATHING, BLAST, UNSPECIFIED = (
+    "bleeding_shock", "breathing", "blast", "unspecified",
+)
 
 THRESHOLDS = {
     # --- yellow: vitals ---
@@ -52,6 +75,9 @@ THRESHOLDS = {
     "co_ppm": 35,            # ppm, >= this
     "ch4_pct": 1.0,          # %,   >= this
     "o2_pct_low": 19.5,      # %,   <  this
+    # --- Day 8: blast pattern ---
+    "blast_impact_g": 7.5,   # g, well above a normal stumble/hit spike
+    "blast_seismic": 0.5,    # seismic reading, baseline noise is ~0.01-0.03
 }
 
 
@@ -59,6 +85,7 @@ THRESHOLDS = {
 class TriageResult:
     tier: str
     reasons: list = field(default_factory=list)
+    injury_hint: str = None    # only set on RED; see module docstring
 
 
 def _first(packet, *keys):
@@ -80,12 +107,37 @@ class TriageEngine:
 
     # -- public API ---------------------------------------------------
 
+    def _classify_pattern(self, packet, impact_g, hr, crash):
+        """Day 8: decide what kind of casualty this Red is, from this one packet."""
+        t = self.t
+        seismic = _first(packet, "seismic_reading")
+
+        if (
+            impact_g is not None and impact_g >= t["blast_impact_g"]
+            and seismic is not None and seismic >= t["blast_seismic"]
+        ):
+            return BLAST
+
+        crashed_high = hr is not None and hr >= t["crash_hr_high"]
+        crashed_low_spo2 = any("SpO2" in c for c in crash)
+
+        if crashed_high:
+            return BLEEDING_SHOCK
+        if crashed_low_spo2:
+            # SpO2 crashed without a compensatory tachycardia (HR normal,
+            # or even crashed low/bradycardic) - airway/oxygen problem.
+            return BREATHING
+        return UNSPECIFIED
+
     def evaluate(self, packet):
-        """Classify one packet. Returns TriageResult(tier, reasons)."""
+        """Classify one packet. Returns TriageResult(tier, reasons, injury_hint)."""
         wid = _first(packet, "worker_id", "id")
         ts = packet["ts"]
         st = self._state.setdefault(
-            wid, {"last_impact_ts": None, "last_impact_g": None, "red": False, "hit_ts": None}
+            wid, {
+                "last_impact_ts": None, "last_impact_g": None,
+                "red": False, "hit_ts": None, "injury_hint": None,
+            }
         )
         t = self.t
 
@@ -113,12 +165,20 @@ class TriageEngine:
 
         # 3. RED: latched, or impact + crash together
         if st["red"]:
-            return TriageResult(RED, [f"latched since ts={st['hit_ts']} (reset() to clear)"])
+            return TriageResult(
+                RED,
+                [f"latched since ts={st['hit_ts']} (reset() to clear)"],
+                injury_hint=st["injury_hint"],
+            )
         if recent_impact and crash:
             st["red"] = True
             st["hit_ts"] = st["last_impact_ts"]
+            hint = self._classify_pattern(packet, st["last_impact_g"], hr, crash)
+            st["injury_hint"] = hint
             return TriageResult(
-                RED, [f"impact {st['last_impact_g']} g within {t['impact_window_s']}s"] + crash
+                RED,
+                [f"impact {st['last_impact_g']} g within {t['impact_window_s']}s"] + crash,
+                injury_hint=hint,
             )
 
         # 4. YELLOW: any single warning sign
