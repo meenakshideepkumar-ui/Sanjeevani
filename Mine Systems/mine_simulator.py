@@ -25,6 +25,19 @@ Also changed from Day 5 (needed so triage has no false positives):
   - accumulating miners now get noise ON TOP of the trend, as the Day 5
     docstring promised (before, M09's gas line was perfectly smooth).
 
+Day 10 - manual panic-button trigger
+  - trigger_panic(state) simulates a worker pressing a distress button.
+    Unlike a phase (strain/hit persist tick-to-tick, changing how vitals
+    move), a button press is a single momentary event: it does NOT touch
+    phase, motion, or vitals at all - it just makes panic=True show up on
+    the very next packet built for that miner, then clears itself. That
+    one field is enough: triage.py treats panic=True as an immediate,
+    unconditional Red, independent of impact/crash.
+  - this is why it's a separate one-shot flag instead of a fourth phase -
+    a real device reports "button was pressed" once, not "button is being
+    held", and a panic press can happen to a miner who is otherwise
+    perfectly healthy (no strain, no hit).
+
 Usage:
   python mine_simulator.py                      # normal run, all miners healthy-ish
   python mine_simulator.py --demo               # scripted M07 casualty
@@ -126,6 +139,7 @@ def new_state():
     s["ch4_trend"] = BASELINE["ch4_pct"]
     s["phase"] = "normal"          # normal | strain | hit
     s["impact_pending"] = False    # emit the impact spike on the next packet
+    s["panic_pending"] = False     # Day 10: emit panic=True on the next packet only
     return s
 
 
@@ -135,6 +149,20 @@ def set_phase(state, phase):
         raise ValueError(f"unknown phase: {phase}")
     state["phase"] = phase
     state["impact_pending"] = phase == "hit"
+
+
+def trigger_panic(state):
+    """
+    Day 10: simulate a worker pressing the panic button.
+
+    Unlike a phase (which persists tick-to-tick), a button press is a
+    single momentary event - it does NOT change `phase`, doesn't touch
+    vitals or motion, and only shows up as panic=True on the very next
+    packet built for this miner. The triage engine is what latches it
+    into a standing Red; the simulator's job is just to report the press
+    once, honestly, like a real device would.
+    """
+    state["panic_pending"] = True
 
 
 # --- Packet builder -------------------------------------------------------
@@ -149,6 +177,10 @@ def build_packet(worker_id, pos, state, profile, ts=None):
     if hit_tick:
         motion_g = round(random.uniform(*IMPACT_RANGE), 2)
         state["impact_pending"] = False
+
+    # Day 10: one-shot panic flag - consumed here regardless of phase
+    panic_tick = state["panic_pending"]
+    state["panic_pending"] = False
 
     # vitals
     if phase == "normal":
@@ -197,6 +229,7 @@ def build_packet(worker_id, pos, state, profile, ts=None):
         "ambient_temp_c": state["ambient_temp_c"],
         "seismic_reading": state["seismic_reading"],
         "self_rescuer_status": "stowed",
+        "panic": panic_tick,
         "triage_tier": "green",  # overwritten by the triage engine before emitting
     }
 
