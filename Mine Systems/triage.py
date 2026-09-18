@@ -75,6 +75,25 @@ press accompanied by a real crash still gets a real hint) - it just
 doesn't require them. `TriageResult.manual_trigger` is True for the
 lifetime of a Red that was (at least partly) declared this way, so the UI
 can show "SOS pressed" distinctly from an auto-detected casualty.
+
+Day 11: signal dropout. A worker who stops sending packets is NOT a tier -
+silence says nothing about their vitals, so it must never turn a pin green
+or red by itself. It is a separate signal-health axis, reported alongside
+the tier:
+
+  signal_status(worker_id, now)   -> {"status", "silent_for_s",
+                                      "last_seen_ts", "last_tier"}
+      status  "ok"      packet seen recently
+              "stale"   silent >= signal_stale_s   (map: dim / "?" badge)
+              "lost"    silent >= signal_lost_s    (map: grey, "last known")
+              "unknown" never heard from this worker
+      last_tier is the tier of the LAST packet received, so the UI can say
+      "signal lost - last known RED" (a latched Red stays Red on dropout).
+  TriageResult.reconnected_after_s  set on the first packet after a gap of
+      >= signal_lost_s (seconds of silence), else None.
+
+The engine has no clock (still pure logic): the caller passes `now`, using
+the same time base as packet["ts"].
 """
 
 from dataclasses import dataclass, field
@@ -107,6 +126,9 @@ THRESHOLDS = {
     # --- Day 9: trend dead-band ---
     "hr_trend_delta": 3,     # bpm change between consecutive packets to call it rising/falling
     "spo2_trend_delta": 1,   # %   change between consecutive packets to call it rising/falling
+    # --- Day 11: signal dropout (packets normally arrive every ~3 s) ---
+    "signal_stale_s": 7,     # s of silence -> "stale"  (~2 missed packets)
+    "signal_lost_s": 12,     # s of silence -> "lost"   (~4 missed packets)
 }
 
 
@@ -119,6 +141,7 @@ class TriageResult:
     hr_trend: str = None       # "rising" / "falling" / "steady" / None
     spo2_trend: str = None     # "rising" / "falling" / "steady" / None
     manual_trigger: bool = False   # True if (any part of) this RED came from the panic button
+    reconnected_after_s: int = None  # Day 11: silence length if this packet ends a "lost" gap
 
 
 def _first(packet, *keys):
@@ -172,7 +195,37 @@ class TriageEngine:
         return "rising" if diff > 0 else "falling"
 
     def evaluate(self, packet):
-        """Classify one packet. Returns a TriageResult."""
+        """Classify one packet. Returns a TriageResult (also records signal health)."""
+        wid = _first(packet, "worker_id", "id")
+        ts = packet["ts"]
+        prev_seen = self._state.get(wid, {}).get("last_seen_ts")
+
+        result = self._evaluate(packet)
+
+        st = self._state[wid]
+        if prev_seen is not None and ts - prev_seen >= self.t["signal_lost_s"]:
+            result.reconnected_after_s = ts - prev_seen
+        st["last_seen_ts"] = ts if prev_seen is None else max(prev_seen, ts)
+        st["last_tier"] = result.tier
+        return result
+
+    def signal_status(self, worker_id, now):
+        """Day 11: how long has this worker been silent? See module docstring."""
+        st = self._state.get(worker_id)
+        if not st or st["last_seen_ts"] is None:
+            return {"status": "unknown", "silent_for_s": None,
+                    "last_seen_ts": None, "last_tier": None}
+        silent = max(0, now - st["last_seen_ts"])
+        if silent >= self.t["signal_lost_s"]:
+            status = "lost"
+        elif silent >= self.t["signal_stale_s"]:
+            status = "stale"
+        else:
+            status = "ok"
+        return {"status": status, "silent_for_s": silent,
+                "last_seen_ts": st["last_seen_ts"], "last_tier": st["last_tier"]}
+
+    def _evaluate(self, packet):
         wid = _first(packet, "worker_id", "id")
         ts = packet["ts"]
         st = self._state.setdefault(
@@ -180,6 +233,7 @@ class TriageEngine:
                 "last_impact_ts": None, "last_impact_g": None,
                 "red": False, "hit_ts": None, "injury_hint": None,
                 "prev_hr": None, "prev_spo2": None, "manual_trigger": False,
+                "last_seen_ts": None, "last_tier": None,
             }
         )
         t = self.t
