@@ -92,6 +92,9 @@ the tier:
   TriageResult.reconnected_after_s  set on the first packet after a gap of
       >= signal_lost_s (seconds of silence), else None.
 
+Day 13: an optional `panic_ts` on the packet (set by a device that buffered
+the press while offline) is used as hit_ts for a panic-only Red.
+
 The engine has no clock (still pure logic): the caller passes `now`, using
 the same time base as packet["ts"].
 """
@@ -291,7 +294,13 @@ class TriageEngine:
         auto_trigger = recent_impact and crash
         if auto_trigger or panic:
             st["red"] = True
-            st["hit_ts"] = st["last_impact_ts"] if auto_trigger else ts
+            # Day 13: a press buffered during a dropout carries panic_ts (when it
+            # really happened) so since_hit_s counts from the press.
+            panic_ts = _first(packet, "panic_ts")
+            st["hit_ts"] = (
+                st["last_impact_ts"] if auto_trigger
+                else (min(panic_ts, ts) if panic_ts is not None else ts)
+            )
             st["manual_trigger"] = panic
             hint = self._classify_pattern(packet, st["last_impact_g"], hr, crash)
             st["injury_hint"] = hint
