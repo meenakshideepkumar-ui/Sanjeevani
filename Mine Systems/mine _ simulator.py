@@ -1,13 +1,17 @@
 """
 Sanjeevani — Mine Systems
-Day 3: Mine simulator — gas levels, temp, motion for 1 miner.
+Day 4: Multi-miner support + normal shift simulation.
+
+Extends Day 3's single-miner simulator to multiple miners running
+concurrently, each with their own independent drifting state — still
+a "normal shift" (steady gas/motion, no danger events yet).
 
 Emits packets matching shared/protocol.md v1 (miner domain):
   common fields + miner-only block.
 
 Keep it simple for now:
-  - one hardcoded miner
-  - "normal shift" baseline values with small random drift
+  - N hardcoded miners, each with a fixed starting position
+  - independent baseline + drift per miner (so they don't all move in lockstep)
   - no danger events yet (that's Day 5-6)
   - no triage_tier logic yet (that's Day 8-9) -> sent as "green" placeholder
   - prints packets to console every few seconds (swap for websocket later)
@@ -19,12 +23,17 @@ import time
 
 # --- Config -----------------------------------------------------------
 
-MINER_ID = "M07"
-INTERVAL_SECONDS = 3          # how often a packet is emitted
-STARTING_POS = (60.0, 12.5, -2)  # pos_x, pos_y, pos_z (level -2)
+INTERVAL_SECONDS = 3  # how often a packet round is emitted (all miners each round)
 
-# "Normal shift" baseline values — tweak these as you learn more from
-# real occupational-safety numbers later (Day 16 task)
+# One entry per miner: worker_id -> starting position (pos_x, pos_y, pos_z)
+MINERS = {
+    "M07": (60.0, 12.5, -2),
+    "M08": (65.0, 10.0, -2),
+    "M09": (58.0, 20.0, -3),
+}
+
+# "Normal shift" baseline values — same starting point for every miner,
+# each then drifts independently once the sim is running.
 BASELINE = {
     "hr": 85,
     "spo2": 98,
@@ -47,7 +56,7 @@ def drift(value, spread, min_val=None, max_val=None):
     return round(new_val, 2)
 
 
-def build_packet(state):
+def build_packet(worker_id, pos, state):
     """Build one miner packet matching the locked protocol schema."""
     # slow drift for gas/temp/vitals — "steady gas/motion" per Day 4 task
     state["hr"] = drift(state["hr"], 2, min_val=60, max_val=110)
@@ -62,15 +71,15 @@ def build_packet(state):
     motion_g = round(random.uniform(0.0, 1.5), 2)  # light shift motion, no spikes yet
 
     packet = {
-        "worker_id": MINER_ID,
+        "worker_id": worker_id,
         "domain": "miner",
         "ts": int(time.time()),
         "hr": int(state["hr"]),
         "spo2": int(state["spo2"]),
         "motion_g": motion_g,
-        "pos_x": STARTING_POS[0],
-        "pos_y": STARTING_POS[1],
-        "pos_z": STARTING_POS[2],
+        "pos_x": pos[0],
+        "pos_y": pos[1],
+        "pos_z": pos[2],
         "triage_tier": "green",  # placeholder until Day 8-9 triage engine exists
         "battery_pct": round(state["battery_pct"], 1),
         "comms_status": "ok",
@@ -85,12 +94,15 @@ def build_packet(state):
 
 
 def run():
-    state = dict(BASELINE)  # mutable copy we drift over time
-    print(f"Mine simulator started for {MINER_ID} — Ctrl+C to stop\n")
+    # each miner gets an independent copy of the baseline so they drift separately
+    states = {worker_id: dict(BASELINE) for worker_id in MINERS}
+
+    print(f"Mine simulator started for {len(MINERS)} miners: {', '.join(MINERS)} — Ctrl+C to stop\n")
     try:
         while True:
-            packet = build_packet(state)
-            print(json.dumps(packet))
+            for worker_id, pos in MINERS.items():
+                packet = build_packet(worker_id, pos, states[worker_id])
+                print(json.dumps(packet))
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
         print("\nSimulator stopped.")
