@@ -64,6 +64,17 @@ Day 13 - dropout fixes
     slow packet rate is not mistaken for a dropout (fixed 7 s / 12 s only
     hold for the default 3 s cadence).
 
+Day 14 - triage outputs on the wire
+  - the server side is Java, so it cannot import triage.py: the simulator
+    must send the triage outputs itself. attach_triage() copies them onto
+    the packet as flat OPTIONAL fields (omitted when they have no value, so
+    a green packet stays small):
+      triage_tier          always
+      hr_trend/spo2_trend  from a worker's 2nd packet on
+      reasons              when non-empty (why yellow/red)
+      injury_hint, since_hit_s, manual_trigger    RED only
+      reconnected_after_s  only on the first packet after a lost gap
+
 Usage:
   python mine_simulator.py                      # normal run, all miners healthy-ish
   python mine_simulator.py --demo               # scripted M07 casualty
@@ -311,6 +322,28 @@ def build_packet(worker_id, pos, state, profile, ts=None):
     return packet
 
 
+def attach_triage(packet, result):
+    """
+    Day 14: copy the triage engine's outputs onto the packet as flat optional
+    fields. Keys with no value are left out entirely (never sent as null) so
+    a strictly-typed consumer only sees a field when it means something.
+    """
+    packet["triage_tier"] = result.tier
+    if result.hr_trend is not None:
+        packet["hr_trend"] = result.hr_trend
+    if result.spo2_trend is not None:
+        packet["spo2_trend"] = result.spo2_trend
+    if result.reasons:
+        packet["reasons"] = list(result.reasons)
+    if result.tier == "red":
+        packet["injury_hint"] = result.injury_hint
+        packet["since_hit_s"] = result.since_hit_s
+        packet["manual_trigger"] = result.manual_trigger
+    if result.reconnected_after_s is not None:
+        packet["reconnected_after_s"] = result.reconnected_after_s
+    return packet
+
+
 # --- Output ---------------------------------------------------------------
 
 class Emitter:
@@ -415,7 +448,7 @@ def run(interval, demo, ws_url, seed):
                 if states[wid]["dropout"]:
                     continue  # dark: state advanced (and events buffered), nothing sent
                 result = engine.evaluate(packet)
-                packet["triage_tier"] = result.tier
+                attach_triage(packet, result)
                 emitter.send(packet)
 
                 if result.tier != last_tier.get(wid, "green"):
