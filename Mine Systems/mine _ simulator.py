@@ -1,18 +1,21 @@
 """
 Sanjeevani — Mine Systems
-Day 4: Multi-miner support + normal shift simulation.
+Day 5: Gas-level drift + slow accumulation model.
 
-Extends Day 3's single-miner simulator to multiple miners running
-concurrently, each with their own independent drifting state — still
-a "normal shift" (steady gas/motion, no danger events yet).
+Builds on Day 4's multi-miner simulator. Up to now, gas values only
+random-walked around a flat baseline forever - realistic-looking noise,
+but nothing ever actually got worse. Day 5 adds a slow *directional*
+accumulation on top of that noise for miners in a "poor ventilation"
+zone, so CO/CH4 can genuinely trend upward over the shift instead of
+just idling - the first step toward a believable "problem developing"
+story (which Day 6 will turn into a sudden spike/trigger).
 
 Emits packets matching shared/protocol.md v1 (miner domain):
   common fields + miner-only block.
 
-Keep it simple for now:
-  - N hardcoded miners, each with a fixed starting position
-  - independent baseline + drift per miner (so they don't all move in lockstep)
-  - no danger events yet (that's Day 5-6)
+Still in scope for Day 5 only:
+  - accumulation is slow and bounded (plateaus, doesn't run away to infinity)
+  - no sudden spike/tremor event yet (that's Day 6)
   - no triage_tier logic yet (that's Day 8-9) -> sent as "green" placeholder
   - prints packets to console every few seconds (swap for websocket later)
 """
@@ -32,7 +35,18 @@ MINERS = {
     "M09": (58.0, 20.0, -3),
 }
 
-# "Normal shift" baseline values — same starting point for every miner,
+# NEW for Day 5: per-miner ventilation profile.
+#   "steady"       -> gas values just noise around baseline, like Day 4
+#   "accumulating" -> gas values noise + a slow upward trend (poor ventilation zone)
+# M09 is placed in a lower-airflow pocket for this demo, so the accumulation
+# story has somewhere real to happen without touching M07/M08's behavior.
+VENTILATION_PROFILE = {
+    "M07": "steady",
+    "M08": "steady",
+    "M09": "accumulating",
+}
+
+# "Normal shift" baseline values - same starting point for every miner,
 # each then drifts independently once the sim is running.
 BASELINE = {
     "hr": 85,
@@ -43,6 +57,14 @@ BASELINE = {
     "ambient_temp_c": 26.0,
     "seismic_reading": 0.02,
     "battery_pct": 100,
+}
+
+# NEW for Day 5: how fast an "accumulating" miner's gas readings trend
+# upward per tick, and the plateau they level off toward. Kept gentle and
+# bounded on purpose - this is slow build-up over a shift, not a spike.
+ACCUMULATION = {
+    "co_ppm": {"rate": 0.4, "ceiling": 120},
+    "ch4_pct": {"rate": 0.015, "ceiling": 3.0},
 }
 
 
@@ -56,17 +78,38 @@ def drift(value, spread, min_val=None, max_val=None):
     return round(new_val, 2)
 
 
-def build_packet(worker_id, pos, state):
+def accumulate(value, field):
+    """
+    Nudge a gas value slowly toward its ceiling. Slows down as it
+    approaches the ceiling so it plateaus instead of clipping hard -
+    reads as a believable slow build-up rather than a ramp to a wall.
+    """
+    cfg = ACCUMULATION[field]
+    rate = cfg["rate"]
+    ceiling = cfg["ceiling"]
+    remaining = max(0.0, ceiling - value)
+    step = rate * (remaining / ceiling)
+    return round(min(ceiling, value + step), 3)
+
+
+def build_packet(worker_id, pos, state, profile):
     """Build one miner packet matching the locked protocol schema."""
-    # slow drift for gas/temp/vitals — "steady gas/motion" per Day 4 task
+    # vitals: same gentle noise as Day 4, unaffected by ventilation profile
     state["hr"] = drift(state["hr"], 2, min_val=60, max_val=110)
     state["spo2"] = drift(state["spo2"], 0.5, min_val=90, max_val=100)
-    state["co_ppm"] = drift(state["co_ppm"], 1, min_val=0, max_val=200)
-    state["ch4_pct"] = drift(state["ch4_pct"], 0.02, min_val=0, max_val=5)
-    state["o2_pct"] = drift(state["o2_pct"], 0.1, min_val=15, max_val=21)
     state["ambient_temp_c"] = drift(state["ambient_temp_c"], 0.3, min_val=20, max_val=45)
     state["seismic_reading"] = drift(state["seismic_reading"], 0.01, min_val=0, max_val=5)
     state["battery_pct"] = max(0, state["battery_pct"] - 0.05)  # slow drain
+    state["o2_pct"] = drift(state["o2_pct"], 0.1, min_val=15, max_val=21)
+
+    # gas readings: noise as before, PLUS a slow directional trend if this
+    # miner is in an "accumulating" (poor ventilation) zone
+    if profile == "accumulating":
+        state["co_ppm"] = accumulate(state["co_ppm"], "co_ppm")
+        state["ch4_pct"] = accumulate(state["ch4_pct"], "ch4_pct")
+    else:
+        state["co_ppm"] = drift(state["co_ppm"], 1, min_val=0, max_val=200)
+        state["ch4_pct"] = drift(state["ch4_pct"], 0.02, min_val=0, max_val=5)
 
     motion_g = round(random.uniform(0.0, 1.5), 2)  # light shift motion, no spikes yet
 
@@ -97,11 +140,13 @@ def run():
     # each miner gets an independent copy of the baseline so they drift separately
     states = {worker_id: dict(BASELINE) for worker_id in MINERS}
 
-    print(f"Mine simulator started for {len(MINERS)} miners: {', '.join(MINERS)} — Ctrl+C to stop\n")
+    print(f"Mine simulator started for {len(MINERS)} miners: {', '.join(MINERS)} — Ctrl+C to stop")
+    print(f"Ventilation profiles: {VENTILATION_PROFILE}\n")
     try:
         while True:
             for worker_id, pos in MINERS.items():
-                packet = build_packet(worker_id, pos, states[worker_id])
+                profile = VENTILATION_PROFILE.get(worker_id, "steady")
+                packet = build_packet(worker_id, pos, states[worker_id], profile)
                 print(json.dumps(packet))
             time.sleep(INTERVAL_SECONDS)
     except KeyboardInterrupt:
