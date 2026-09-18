@@ -116,6 +116,7 @@ THRESHOLDS = {
     "crash_spo2": 89,        # %,   <= this
     "crash_hr_high": 140,    # bpm, >= this (shock-type tachycardia)
     "crash_hr_low": 45,      # bpm, <= this
+    "shock_hr": 120,         # bpm, >= this WITH an SpO2 crash reads as shock, not breathing (Day 12)
     # --- yellow: gas (mine domain) ---
     "co_ppm": 35,            # ppm, >= this
     "ch4_pct": 1.0,          # %,   >= this
@@ -180,6 +181,13 @@ class TriageEngine:
         if crashed_high:
             return BLEEDING_SHOCK
         if crashed_low_spo2:
+            # Day 12: Red latches on the FIRST tick a crash is seen, when HR is
+            # often still climbing (e.g. 138, just under crash_hr_high). An
+            # SpO2 crash with HR already tachycardic (>= shock_hr) is still the
+            # shock signature. Requiring the SpO2 crash keeps a panic press on
+            # a merely-strained worker (HR 130, SpO2 ok) as "unspecified".
+            if hr is not None and hr >= t["shock_hr"]:
+                return BLEEDING_SHOCK
             # SpO2 crashed without a compensatory tachycardia (HR normal,
             # or even crashed low/bradycardic) - airway/oxygen problem.
             return BREATHING
