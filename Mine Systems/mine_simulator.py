@@ -78,6 +78,8 @@ Day 14 - triage outputs on the wire
 Usage:
   python mine_simulator.py                      # normal run, all miners healthy-ish
   python mine_simulator.py --demo               # scripted M07 casualty
+  python mine_simulator.py --demo --scenario multi    # M07 + M08 down together
+  python mine_simulator.py --demo --scenario stumble  # knock + exertion, stays yellow
   python mine_simulator.py --demo --ws ws://localhost:8765
   python mine_simulator.py --demo --interval 1 --seed 42
 """
@@ -137,16 +139,39 @@ CASUALTY_TARGETS = {
 }
 CASUALTY_PULL = 0.4
 IMPACT_RANGE = (5.5, 8.0)  # g, the one-shot impact spike (normal motion is 0-1.5)
+STUMBLE_RANGE = (4.2, 6.5)  # g, Day 15: a knock - over threshold, under a hit
 
-# Demo story: (seconds after start, worker, phase)
-# `action` is a phase name, or "dropout" / "reconnect" (Day 11).
-DEMO_SCRIPT = [
-    (15, "M07", "strain"),
-    (24, "M08", "dropout"),
-    (36, "M07", "hit"),
-    (50, "M08", "reconnect"),
-]
+# Demo story: (seconds after start, worker, action)
+# `action` is a phase name, "dropout" / "reconnect" (Day 11), "stumble" or
+# "panic" (Day 15 - both one-shot, neither changes phase).
+DEMO_SCRIPTS = {
+    # the rehearsed hero path - unchanged, still the default
+    "casualty": [
+        (15, "M07", "strain"),
+        (24, "M08", "dropout"),
+        (36, "M07", "hit"),
+        (50, "M08", "reconnect"),
+    ],
+    # Day 15: two workers down within seconds of each other, while a third
+    # is on its own gas curve - proves the pins move independently
+    "multi": [
+        (12, "M07", "strain"),
+        (18, "M08", "strain"),
+        (27, "M07", "hit"),
+        (33, "M08", "hit"),
+    ],
+    # Day 15: the false-positive story - a knock, then exertion, on a worker
+    # who is fine throughout. Should read Yellow and never Red.
+    "stumble": [
+        (12, "M07", "stumble"),
+        (21, "M07", "strain"),
+        (45, "M07", "normal"),
+    ],
+}
+DEMO_SCRIPT = DEMO_SCRIPTS["casualty"]  # back-compat for anything importing it
+
 LINK_ACTIONS = ("dropout", "reconnect")
+ONE_SHOT_ACTIONS = ("stumble", "panic")
 
 
 # --- Helpers ------------------------------------------------------------
@@ -181,6 +206,7 @@ def new_state():
     s["ch4_trend"] = BASELINE["ch4_pct"]
     s["phase"] = "normal"          # normal | strain | hit
     s["impact_pending"] = False    # emit the impact spike on the next packet
+    s["stumble_pending"] = False   # Day 15: harmless knock - impact, no crash
     s["panic_pending"] = False     # Day 10: emit panic=True on the next packet only
     s["dropout"] = False           # Day 11: device offline - packets are not sent
     s["buffered_impact_g"] = 0.0   # Day 13: biggest impact seen while dark
@@ -208,6 +234,24 @@ def trigger_panic(state):
     once, honestly, like a real device would.
     """
     state["panic_pending"] = True
+
+
+def trigger_stumble(state):
+    """
+    Day 15: a knock, trip or dropped tool - a real impact spike on a worker
+    who is otherwise fine.
+
+    This is the false-positive case the triage rules have to survive, and
+    until now the simulator could not produce it: set_phase("hit") couples
+    the impact spike AND the vitals crash, and normal motion tops out at
+    1.5 g, below the 4.0 g impact threshold. So there was no way to feed the
+    engine an impact that should NOT become a casualty.
+
+    Like a panic press it is one-shot and does not touch `phase`: vitals go
+    on drifting around baseline while the impact lands. Expected result is
+    Yellow for impact_window_s, then back to Green on its own.
+    """
+    state["stumble_pending"] = True
 
 
 def signal_thresholds(interval):
@@ -245,6 +289,11 @@ def build_packet(worker_id, pos, state, profile, ts=None):
     if hit_tick:
         motion_g = round(random.uniform(*IMPACT_RANGE), 2)
         state["impact_pending"] = False
+    elif state["stumble_pending"]:
+        # Day 15: a knock is a genuine impact spike, but a smaller one than a
+        # casualty-grade hit, and vitals are left alone.
+        motion_g = round(random.uniform(*STUMBLE_RANGE), 2)
+        state["stumble_pending"] = False
 
     # Day 10: one-shot panic flag - consumed here regardless of phase
     panic_tick = state["panic_pending"]
@@ -410,14 +459,14 @@ class Emitter:
 
 # --- Main loop --------------------------------------------------------------
 
-def run(interval, demo, ws_url, seed):
+def run(interval, demo, ws_url, seed, scenario="casualty"):
     if seed is not None:
         random.seed(seed)
 
     states = {wid: new_state() for wid in MINERS}
     engine = TriageEngine(signal_thresholds(interval))
     emitter = Emitter(ws_url)
-    script = sorted(DEMO_SCRIPT) if demo else []
+    script = sorted(DEMO_SCRIPTS[scenario]) if demo else []
     last_tier = {}
     last_signal = {wid: "ok" for wid in MINERS}
     start = time.time()
@@ -425,7 +474,7 @@ def run(interval, demo, ws_url, seed):
     print(f"Mine simulator started for {len(MINERS)} miners: {', '.join(MINERS)} - Ctrl+C to stop", file=sys.stderr)
     print(f"Ventilation profiles: {VENTILATION_PROFILE}", file=sys.stderr)
     if demo:
-        print(f"Demo script (s, miner, phase/link action): {script}", file=sys.stderr)
+        print(f"Demo scenario '{scenario}' (s, miner, action): {script}", file=sys.stderr)
     print(file=sys.stderr)
 
     try:
@@ -437,9 +486,14 @@ def run(interval, demo, ws_url, seed):
                     start_dropout(states[wid])
                 elif action == "reconnect":
                     end_dropout(states[wid])
+                elif action == "stumble":
+                    trigger_stumble(states[wid])
+                elif action == "panic":
+                    trigger_panic(states[wid])
                 else:
                     set_phase(states[wid], action)
-                label = "link" if action in LINK_ACTIONS else "phase"
+                label = ("link" if action in LINK_ACTIONS else
+                         "event" if action in ONE_SHOT_ACTIONS else "phase")
                 print(f"[demo] t={elapsed:.0f}s {wid} -> {label} '{action}'", file=sys.stderr)
 
             for wid, pos in MINERS.items():
@@ -482,5 +536,7 @@ if __name__ == "__main__":
     ap.add_argument("--ws", metavar="URL", help="also send each packet to this WebSocket, e.g. ws://localhost:8765")
     ap.add_argument("--interval", type=float, default=INTERVAL_SECONDS, help="seconds between packet rounds")
     ap.add_argument("--seed", type=int, help="random seed for reproducible runs")
+    ap.add_argument("--scenario", choices=sorted(DEMO_SCRIPTS), default="casualty",
+                    help="which --demo story to run (default: casualty, the rehearsed path)")
     args = ap.parse_args()
-    run(args.interval, args.demo, args.ws, args.seed)
+    run(args.interval, args.demo, args.ws, args.seed, args.scenario)
