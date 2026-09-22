@@ -1,18 +1,27 @@
 {
-  "name": "server",
+  "name": "integration-safety",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "description": "Sanjeevani - Integration & Safety: telemetry API/WebSocket server, protocol validation, offline watchdog, auth, incident reports",
+  "main": "server.js",
   "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "demo": "DEMO=1 node server.js",
+    "test": "node test.js"
+  },
+  "keywords": [
+    "sanjeevani",
+    "telemetry",
+    "safety",
+    "socket.io"
+  ],
+  "license": "UNLICENSED",
   "dependencies": {
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "socket.io": "^4.8.3"
+    "pdfkit": "^0.15.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3"
   }
 }
