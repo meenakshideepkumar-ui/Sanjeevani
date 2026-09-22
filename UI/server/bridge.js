@@ -28,3 +28,8 @@ rl.on('line', async (line) => {
     process.stderr.write(`[bridge] ingest failed: ${e.message}\n`);
   }
 });
+const PORT = process.env.PORT || 4000;
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+});
