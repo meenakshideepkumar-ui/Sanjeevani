@@ -1,11 +1,7 @@
 // Sanjeevani — Integration & Safety server (entry point).
 // Express + Socket.IO. Ingest telemetry (HTTP or socket), validate it against
 // the shared protocol, run the offline watchdog, log incidents, and broadcast
-// to the dashboard on the existing 'telemetry_update' event (port 5000).
-//
-//   npm run dev            # server only (feed it via POST /ingest)
-//   npm run demo           # DEMO=1: built-in synthetic feed for a live picture
-//   API_TOKEN=... npm start # require a bearer token to ingest
+// to the dashboard on the existing 'telemetry_update' event.
 
 const express = require('express');
 const http = require('http');
@@ -25,7 +21,12 @@ app.use(cors({ origin: '*' }));
 app.use(express.json({ limit: '256kb' }));
 
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
+const io = new Server(server, { 
+  cors: { 
+    origin: '*',
+    methods: ['GET', 'POST']
+  } 
+});
 
 const watchdog = new Watchdog({ degradedMs: cfg.DEGRADED_TIMEOUT_MS, offlineMs: cfg.OFFLINE_TIMEOUT_MS });
 const positioning = new Positioning();
@@ -88,8 +89,11 @@ if (cfg.DEMO) {
   console.log('[demo] synthetic feed started (2 divers + 2 miners)');
 }
 
-server.listen(cfg.PORT, () => {
-  console.log(`Telemetry server on http://localhost:${cfg.PORT}  (event: ${cfg.TELEMETRY_EVENT})`);
+// Bind to process.env.PORT and '0.0.0.0' so Render can expose the server externally
+const PORT = process.env.PORT || cfg.PORT || 4000;
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Telemetry server running on port ${PORT} (event: ${cfg.TELEMETRY_EVENT})`);
   if (cfg.API_TOKEN) console.log('[auth] ingest requires a bearer token');
 });
 
